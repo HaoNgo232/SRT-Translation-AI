@@ -6,7 +6,6 @@ import concurrent.futures
 import tkinter as tk
 from tkinter import ttk
 from typing import List, Dict, Optional
-import sys
 import threading
 
 # Import lớp API từ module khác

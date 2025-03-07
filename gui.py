@@ -1,4 +1,3 @@
-import os
 import tkinter as tk
 from tkinter import filedialog, ttk
 from typing import Dict, List, Callable
