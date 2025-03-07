@@ -1,15 +1,15 @@
 import os
 import re
 import time
-import json
 import pickle
-import requests
 import concurrent.futures
 import tkinter as tk
 from tkinter import filedialog, ttk
 from typing import List, Dict, Optional
 import sys
-from openai import OpenAI
+
+# Import lớp API từ module khác
+from translation_apis import TranslationAPI
 
 def parse_srt(file_path: str) -> List[Dict]:
     """
@@ -62,227 +62,9 @@ def split_subtitles(subtitles: List[Dict], num_chunks: int) -> List[List[Dict]]:
     
     return chunks
 
-def translate_batch_gemini(subtitles_batch: List[Dict], api_key: str, thread_id: int, max_retries: int = float('inf')) -> List[Dict]:
-    """
-    Dịch một lô phụ đề từ tiếng Anh sang tiếng Việt sử dụng API Gemini.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}"
-    headers = {'Content-Type': 'application/json'}
-    
-    subtitles_text = ""
-    for i, subtitle in enumerate(subtitles_batch):
-        subtitles_text += f"[{i+1}] {subtitle['text']}\n\n"
-    
-    prompt = (
-      "Translate the following English subtitles to Vietnamese. Maintain the numbering format exactly as provided.\n"
-      "Each subtitle is marked with [number] followed by text. Translate ONLY the text, keeping the [number] format.\n"
-      "Return ONLY the translated subtitles with their numbers, no additional text or explanations.\n\n"
-      f"{subtitles_text}"
-    )
-    
-    data = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "topK": 40,
-            "topP": 0.95,
-            "maxOutputTokens": 8192,
-            "responseMimeType": "text/plain"
-        }
-    }
-    
-    retries = 0
-    while retries < max_retries:
-        try:
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            
-            if response.status_code == 200:
-                try:
-                    response_data = response.json()
-                    
-                    if ('candidates' in response_data and 
-                        len(response_data['candidates']) > 0 and 
-                        'content' in response_data['candidates'][0] and
-                        'parts' in response_data['candidates'][0]['content'] and
-                        len(response_data['candidates'][0]['content']['parts']) > 0 and
-                        'text' in response_data['candidates'][0]['content']['parts'][0]):
-                        
-                        translated_text = response_data['candidates'][0]['content']['parts'][0]['text']
-                        
-                        translated_parts = re.findall(r'\[(\d+)\](.*?)(?=\n\[|\Z)', translated_text, re.DOTALL)
-                        
-                        if not translated_parts:
-                            translated_parts = re.findall(r'(?:\[)?(\d+)(?:\])?[:\.\s]+(.*?)(?=\n(?:\[)?\d+(?:\])?[:\.\s]+|\Z)', 
-                                                        translated_text, re.DOTALL)
-                        
-                        translations = {}
-                        for idx_str, text in translated_parts:
-                            try:
-                                idx = int(idx_str)
-                                translations[idx] = text.strip()
-                            except ValueError:
-                                update_status(f"Thread {thread_id}: Cảnh báo - Định dạng chỉ số không hợp lệ: {idx_str}")
-                        
-                        if len(translations) < len(subtitles_batch) / 2:
-                            update_status(f"Thread {thread_id}: Cảnh báo - Chỉ nhận được {len(translations)}/{len(subtitles_batch)} bản dịch")
-                            
-                            if retries < max_retries - 1:
-                                retries += 1
-                                sleep_time = min(2 ** retries, 60)
-                                update_status(f"Thread {thread_id}: Thử lại sau {sleep_time} giây...")
-                                time.sleep(sleep_time)
-                                continue
-                        
-                        translated_subtitles = []
-                        for i, subtitle in enumerate(subtitles_batch):
-                            translated = subtitle.copy()
-                            # Lưu phụ đề gốc
-                            translated['original_text'] = subtitle['text']
-                            if i+1 in translations:
-                                translated['text'] = translations[i+1]
-                            else:
-                                update_status(f"Thread {thread_id}: Thiếu bản dịch cho phụ đề {i+1}")
-                            translated_subtitles.append(translated)
-                        
-                        return translated_subtitles
-                    
-                    else:
-                        update_status(f"Thread {thread_id}: Định dạng phản hồi không như mong đợi (lần thử {retries+1})")
-                
-                except json.JSONDecodeError:
-                    update_status(f"Thread {thread_id}: Không thể phân tích phản hồi JSON (lần thử {retries+1})")
-            
-            else:
-                update_status(f"Thread {thread_id}: Lỗi API (lần thử {retries+1}): {response.status_code}")
-            
-            sleep_time = min(2 ** retries, 60)
-            update_status(f"Thread {thread_id}: Thử lại sau {sleep_time} giây...")
-            time.sleep(sleep_time)
-            retries += 1
-            
-        except Exception as e:
-            update_status(f"Thread {thread_id}: Ngoại lệ trong quá trình gọi API (lần thử {retries+1}): {str(e)}")
-            sleep_time = min(2 ** retries, 60)
-            time.sleep(sleep_time)
-            retries += 1
-    
-    update_status(f"Thread {thread_id}: Không thể dịch lô sau {max_retries} lần thử")
-    return subtitles_batch
-
-def translate_batch_novita(subtitles_batch: List[Dict], api_key: str, base_url: str, model: str, thread_id: int, max_retries: int = float('inf')) -> List[Dict]:
-    """
-    Dịch một lô phụ đề từ tiếng Anh sang tiếng Việt sử dụng API Novita AI.
-    """
-    try:
-        client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-        )
-        
-        subtitles_text = ""
-        for i, subtitle in enumerate(subtitles_batch):
-            subtitles_text += f"[{i+1}] {subtitle['text']}\n\n"
-        
-        prompt = (
-            "Translate the following English subtitles to Vietnamese. Maintain the numbering format exactly as provided.\n"
-            "Each subtitle is marked with [number] followed by text. Translate ONLY the text, keeping the [number] format.\n"
-            "Return ONLY the translated subtitles with their numbers, no additional text or explanations.\n\n"
-            f"{subtitles_text}"
-        )
-        
-        retries = 0
-        while retries < max_retries:
-            try:
-                chat_completion_res = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a professional translator specialized in translating English to Vietnamese. Return only the translated text with the same formatting as the input.",
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-                    stream=False,
-                    max_tokens=8192,
-                    temperature=0.1,
-                )
-                
-                if chat_completion_res and hasattr(chat_completion_res, 'choices') and len(chat_completion_res.choices) > 0:
-                    translated_text = chat_completion_res.choices[0].message.content
-                    
-                    translated_parts = re.findall(r'\[(\d+)\](.*?)(?=\n\[|\Z)', translated_text, re.DOTALL)
-                    
-                    if not translated_parts:
-                        translated_parts = re.findall(r'(?:\[)?(\d+)(?:\])?[:\.\s]+(.*?)(?=\n(?:\[)?\d+(?:\])?[:\.\s]+|\Z)', 
-                                                    translated_text, re.DOTALL)
-                    
-                    translations = {}
-                    for idx_str, text in translated_parts:
-                        try:
-                            idx = int(idx_str)
-                            translations[idx] = text.strip()
-                        except ValueError:
-                            update_status(f"Thread {thread_id}: Cảnh báo - Định dạng chỉ số không hợp lệ: {idx_str}")
-                    
-                    if len(translations) < len(subtitles_batch) / 2:
-                        update_status(f"Thread {thread_id}: Cảnh báo - Chỉ nhận được {len(translations)}/{len(subtitles_batch)} bản dịch")
-                        
-                        if retries < max_retries - 1:
-                            retries += 1
-                            sleep_time = min(2 ** retries, 60)
-                            update_status(f"Thread {thread_id}: Thử lại sau {sleep_time} giây...")
-                            time.sleep(sleep_time)
-                            continue
-                    
-                    translated_subtitles = []
-                    for i, subtitle in enumerate(subtitles_batch):
-                        translated = subtitle.copy()
-                        # Lưu phụ đề gốc
-                        translated['original_text'] = subtitle['text']
-                        if i+1 in translations:
-                            translated['text'] = translations[i+1]
-                        else:
-                            update_status(f"Thread {thread_id}: Thiếu bản dịch cho phụ đề {i+1}")
-                        translated_subtitles.append(translated)
-                    
-                    return translated_subtitles
-                
-                else:
-                    update_status(f"Thread {thread_id}: Phản hồi Novita AI không như mong đợi (lần thử {retries+1})")
-                    
-                    sleep_time = min(2 ** retries, 60)
-                    update_status(f"Thread {thread_id}: Thử lại sau {sleep_time} giây...")
-                    time.sleep(sleep_time)
-                    retries += 1
-                    
-            except Exception as e:
-                update_status(f"Thread {thread_id}: Lỗi khi gọi Novita AI API (lần thử {retries+1}): {str(e)}")
-                sleep_time = min(2 ** retries, 60)
-                time.sleep(sleep_time)
-                retries += 1
-                
-        update_status(f"Thread {thread_id}: Không thể dịch lô sau {max_retries} lần thử")
-    
-    except Exception as e:
-        update_status(f"Thread {thread_id}: Lỗi nghiêm trọng khi sử dụng Novita AI: {str(e)}")
-    
-    return subtitles_batch
-
 def translate_subtitle_chunk(chunk: List[Dict], api_config: Dict, thread_id: int, 
-                            progress_file: str, max_retries: int = float('inf'), 
-                            batch_size: int = 10) -> List[Dict]:
+                           progress_file: str, max_retries: int = float('inf'), 
+                           batch_size: int = 10) -> List[Dict]:
     """Dịch một phần phụ đề, xử lý thành các lô nhỏ hơn."""
     total_batches = (len(chunk) + batch_size - 1) // batch_size
     translated_chunk = []
@@ -311,6 +93,9 @@ def translate_subtitle_chunk(chunk: List[Dict], api_config: Dict, thread_id: int
     
     update_status(f"Thread {thread_id}: Phụ đề còn lại cần dịch: {len(remaining_chunk)}/{len(chunk)}")
     
+    # Tạo đối tượng API từ cấu hình
+    translation_api = TranslationAPI.create_api(api_config['type'], api_config)
+    
     for batch_idx in range(0, len(remaining_chunk), batch_size):
         # Lấy một lô phụ đề
         batch = remaining_chunk[batch_idx:batch_idx + batch_size]
@@ -320,27 +105,8 @@ def translate_subtitle_chunk(chunk: List[Dict], api_config: Dict, thread_id: int
         update_status(f"Thread {thread_id}: Đang dịch lô {current_batch}/{remaining_batches} ({len(batch)} phụ đề)")
         update_progress_bar(thread_id, current_batch, remaining_batches)
         
-        # Dịch lô dựa trên API được chọn
-        if api_config['type'] == 'gemini':
-            translated_batch = translate_batch_gemini(
-                batch, 
-                api_config['key'], 
-                thread_id, 
-                max_retries
-            )
-        elif api_config['type'] == 'novita':
-            translated_batch = translate_batch_novita(
-                batch, 
-                api_config['key'], 
-                api_config['base_url'], 
-                api_config['model'], 
-                thread_id, 
-                max_retries
-            )
-        else:
-            update_status(f"Thread {thread_id}: Loại API không được hỗ trợ: {api_config['type']}")
-            translated_batch = batch
-        
+        # Sử dụng API để dịch lô
+        translated_batch = translation_api.translate_batch(batch, thread_id, update_status, max_retries)
         translated_chunk.extend(translated_batch)
         
         # Lưu tiến trình sau mỗi lô
@@ -532,12 +298,12 @@ def gui_main():
     api_frame = tk.Frame(settings_frame)
     api_frame.pack(fill=tk.X, pady=5)
     
-    api_label = tk.Label(api_frame, text="Chọn API:", width=15, anchor='w')
+    api_label = tk.Label(api_frame, text="Chọn dịch vụ API:", width=15, anchor='w')
     api_label.pack(side=tk.LEFT)
     
     api_var = tk.StringVar()
     api_var.set("gemini")  # Giá trị mặc định
-    api_dropdown = ttk.Combobox(api_frame, textvariable=api_var, values=["gemini", "novita"], state="readonly", width=30)
+    api_dropdown = ttk.Combobox(api_frame, textvariable=api_var, values=TranslationAPI.get_supported_apis(), state="readonly", width=30)
     api_dropdown.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
     
     # API Key
@@ -639,6 +405,7 @@ def gui_main():
     bilingual_var.set(False)  # Mặc định: tắt
     bilingual_check = tk.Checkbutton(bilingual_frame, text="Chế độ song ngữ (giữ nguyên phụ đề gốc)", variable=bilingual_var)
     bilingual_check.pack(side=tk.LEFT, padx=5)
+    
     # Số luồng
     threads_frame = tk.Frame(advanced_frame)
     threads_frame.pack(fill=tk.X, pady=5)
@@ -858,13 +625,24 @@ def console_main():
     """Phiên bản giao diện dòng lệnh."""
     print("=== Trình dịch phụ đề SRT (Tiếng Anh sang Tiếng Việt) ===")
     
+    # Lấy danh sách API được hỗ trợ
+    supported_apis = TranslationAPI.get_supported_apis()
+    
     # Chọn API
     print("\nChọn API để sử dụng:")
-    print("1. Gemini API")
-    print("2. Novita AI")
-    api_choice = input("Lựa chọn của bạn (1/2): ").strip()
+    for i, api in enumerate(supported_apis, 1):
+        print(f"{i}. {api.capitalize()} API")
     
-    api_type = "gemini" if api_choice != '2' else "novita"
+    api_choice = input(f"Lựa chọn của bạn (1-{len(supported_apis)}): ").strip()
+    
+    try:
+        idx = int(api_choice) - 1
+        if 0 <= idx < len(supported_apis):
+            api_type = supported_apis[idx]
+        else:
+            api_type = supported_apis[0]  # Default to first API
+    except ValueError:
+        api_type = supported_apis[0]  # Default to first API
     
     # Tuỳ chọn ché độ song ngữ
     bilingual_option = input("\nBật chế độ song ngữ (giữ nguyên phụ đề gốc)? (y/n) [n]: ").strip().lower()
@@ -875,7 +653,7 @@ def console_main():
     
     if api_type == "gemini":
         api_config['key'] = input("Nhập Gemini API key: ").strip()
-    else:  # novita
+    elif api_type == "novita":
         api_config['key'] = input("Nhập Novita AI API key: ").strip()
         api_config['base_url'] = input("Nhập Novita AI base URL [https://api.novita.ai/v3/openai]: ").strip()
         if not api_config['base_url']:
@@ -884,6 +662,7 @@ def console_main():
         api_config['model'] = input("Nhập model [meta-llama/llama-3.1-8b-instruct]: ").strip()
         if not api_config['model']:
             api_config['model'] = "meta-llama/llama-3.1-8b-instruct"
+    # Có thể thêm các API khác ở đây
     
     # Đường dẫn file
     input_file = input("\nNhập đường dẫn đến file SRT: ").strip()
