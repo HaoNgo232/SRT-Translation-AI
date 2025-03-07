@@ -33,13 +33,20 @@ def parse_srt(file_path: str) -> List[Dict]:
     
     return subtitles
 
-def write_srt(subtitles: List[Dict], output_file: str) -> None:
+def write_srt(subtitles: List[Dict], output_file: str, bilingual: bool = False) -> None:
     """Ghi phụ đề vào file SRT."""
     with open(output_file, 'w', encoding='utf-8') as file:
         for subtitle in subtitles:
             file.write(f"{subtitle['index']}\n")
             file.write(f"{subtitle['start_time']} --> {subtitle['end_time']}\n")
-            file.write(f"{subtitle['text']}\n\n")
+            
+            if bilingual and 'original_text' in subtitle:
+                # Ghi cả phụ đề gốc và phụ đề đã dịch
+                file.write(f"{subtitle['original_text']}\n{subtitle['text']}\n\n")
+            else:
+                # Chỉ ghi phụ đề đã dịch
+                file.write(f"{subtitle['text']}\n\n")
+
 
 def split_subtitles(subtitles: List[Dict], num_chunks: int) -> List[List[Dict]]:
     """Chia phụ đề thành các phần gần bằng nhau."""
@@ -138,6 +145,8 @@ def translate_batch_gemini(subtitles_batch: List[Dict], api_key: str, thread_id:
                         translated_subtitles = []
                         for i, subtitle in enumerate(subtitles_batch):
                             translated = subtitle.copy()
+                            # Lưu phụ đề gốc
+                            translated['original_text'] = subtitle['text']
                             if i+1 in translations:
                                 translated['text'] = translations[i+1]
                             else:
@@ -240,6 +249,8 @@ def translate_batch_novita(subtitles_batch: List[Dict], api_key: str, base_url: 
                     translated_subtitles = []
                     for i, subtitle in enumerate(subtitles_batch):
                         translated = subtitle.copy()
+                        # Lưu phụ đề gốc
+                        translated['original_text'] = subtitle['text']
                         if i+1 in translations:
                             translated['text'] = translations[i+1]
                         else:
@@ -620,6 +631,14 @@ def gui_main():
     advanced_frame = tk.LabelFrame(settings_tab, text="Cài đặt nâng cao", padx=10, pady=10)
     advanced_frame.pack(fill=tk.BOTH, padx=5, pady=5)
     
+    # Tuỳ chọn song ngữ
+    bilingual_frame = tk.Frame(advanced_frame)
+    bilingual_frame.pack(fill=tk.X, pady=5)
+
+    bilingual_var = tk.BooleanVar()
+    bilingual_var.set(False)  # Mặc định: tắt
+    bilingual_check = tk.Checkbutton(bilingual_frame, text="Chế độ song ngữ (giữ nguyên phụ đề gốc)", variable=bilingual_var)
+    bilingual_check.pack(side=tk.LEFT, padx=5)
     # Số luồng
     threads_frame = tk.Frame(advanced_frame)
     threads_frame.pack(fill=tk.X, pady=5)
@@ -700,6 +719,7 @@ def gui_main():
     
     # Nút bắt đầu
     def start_translation():
+        bilingual = bilingual_var.get()
         # Lấy cấu hình từ giao diện
         api_type = api_var.get()
         api_key = api_key_entry.get().strip()
@@ -796,7 +816,7 @@ def gui_main():
                 )
                 
                 # Ghi file SRT đã dịch
-                write_srt(translated_subtitles, output_file)
+                write_srt(translated_subtitles, output_file, bilingual)
                 
                 end_time = time.time()
                 update_status(f"\nDịch hoàn thành trong {end_time - start_time:.2f} giây")
@@ -845,6 +865,10 @@ def console_main():
     api_choice = input("Lựa chọn của bạn (1/2): ").strip()
     
     api_type = "gemini" if api_choice != '2' else "novita"
+    
+    # Tuỳ chọn ché độ song ngữ
+    bilingual_option = input("\nBật chế độ song ngữ (giữ nguyên phụ đề gốc)? (y/n) [n]: ").strip().lower()
+    bilingual = bilingual_option in ('y', 'yes')
     
     # Cấu hình API
     api_config = {'type': api_type}
@@ -914,7 +938,7 @@ def console_main():
         )
         
         # Ghi file SRT đã dịch
-        write_srt(translated_subtitles, output_file)
+        write_srt(translated_subtitles, output_file, bilingual)
         
         end_time = time.time()
         print(f"\nDịch hoàn thành trong {end_time - start_time:.2f} giây")
