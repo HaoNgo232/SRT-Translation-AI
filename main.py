@@ -6,7 +6,12 @@ from tkinter import ttk
 
 # Import lớp SRTTranslator
 from srt_translator import SRTTranslator
-from translation_apis import TranslationAPI
+from translation_apis import (
+    TranslationAPI,
+    GEMINI_MODELS,
+    NOVITA_MODELS,
+    OPENROUTER_MODELS,
+)
 from gui import SRTTranslatorGUI
 
 # Biến toàn cục để lưu trữ giao diện
@@ -51,7 +56,7 @@ def start_translation(
     api_var,
     api_key_entry,
     base_url_entry,
-    model_entry,
+    model,
     input_file_entry,
     output_file_entry,
     threads_entry,
@@ -71,6 +76,18 @@ def start_translation(
     # Lấy cấu hình từ giao diện
     api_type = api_var.get()
     api_key = api_key_entry.get().strip()
+
+    # Tạo cấu hình API
+    api_config = {"type": api_type, "key": api_key, "model": model}
+
+    # Cấu hình thêm cho Novita API
+    if api_type == "novita":
+        api_config["base_url"] = base_url_entry.get().strip()
+
+    # Cấu hình thêm cho OpenRouter API
+    if api_type == "openrouter":
+        # Các tùy chọn như site_url và site_name có thể được thêm vào GUI nếu cần
+        pass
 
     try:
         num_threads = int(threads_entry.get().strip())
@@ -109,16 +126,15 @@ def start_translation(
 
         file_suffix = file_suffix_var.get().strip() if file_suffix_var else "_vi"
 
-    # Cấu hình API
-    api_config = {"type": api_type, "key": api_key}
+    # Cấu hình thêm cho Novita API
     if api_type == "novita":
         base_url = base_url_entry.get().strip()
-        model = model_entry.get().strip()
-        if not base_url or not model:
-            update_status("Lỗi: Vui lòng nhập Base URL và Model cho Novita AI")
+        # model đã được truyền vào từ tham số của hàm rồi
+        if not base_url:
+            update_status("Lỗi: Vui lòng nhập Base URL cho Novita AI")
             return
         api_config["base_url"] = base_url
-        api_config["model"] = model
+        # model đã có trong api_config
 
     # Vô hiệu hóa nút bắt đầu trong quá trình dịch
     gui.start_button.config(state=tk.DISABLED)
@@ -206,7 +222,7 @@ if __name__ == "__main__":
         "type": "gemini",  # Giá trị mặc định
         "key": "",
         "base_url": "",
-        "model": "",
+        "model": GEMINI_MODELS[0][0],  # Sử dụng model mặc định của Gemini
     }
 
     gui = SRTTranslatorGUI(api_config, update_status, start_translation)

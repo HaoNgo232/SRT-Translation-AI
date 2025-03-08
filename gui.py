@@ -3,6 +3,14 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from typing import Dict, List, Callable
 
+# Import các danh sách model
+from translation_apis import (
+    TranslationAPI,
+    GEMINI_MODELS,
+    NOVITA_MODELS,
+    OPENROUTER_MODELS,
+)
+
 
 class SRTTranslatorGUI:
     def __init__(
@@ -13,6 +21,7 @@ class SRTTranslatorGUI:
     ):
         """Khởi tạo giao diện người dùng."""
         self.root = tk.Tk()
+
         self.root.title("Ứng dụng dịch phụ đề từ tiếng Anh sang tiếng Việt")
         self.root.geometry("700x750")
 
@@ -25,10 +34,11 @@ class SRTTranslatorGUI:
         # Thêm biến để lưu chế độ dịch (file đơn lẻ hoặc thư mục)
         self.mode_var = tk.StringVar()
         self.mode_var.set("file")  # Mặc định: dịch file đơn lẻ
-
-        # Thêm biến cho hậu tố file
         self.file_suffix_var = tk.StringVar()
         self.file_suffix_var.set("_vi")  # Mặc định: _vi
+        self.model_var = tk.StringVar()
+        self.custom_model_var = tk.BooleanVar()
+        self.custom_model_var.set(False)
 
         # Lưu trữ đối tượng progress_bars
         self.progress_bars = {}
@@ -56,14 +66,12 @@ class SRTTranslatorGUI:
         # Dropdown để chọn API
         api_frame = tk.Frame(settings_frame)
         api_frame.pack(fill=tk.X, pady=5)
-
         api_label = tk.Label(api_frame, text="Chọn dịch vụ API:", width=15, anchor="w")
         api_label.pack(side=tk.LEFT)
-
         api_dropdown = ttk.Combobox(
             api_frame,
             textvariable=self.api_var,
-            values=["gemini", "novita"],
+            values=["gemini", "novita", "openrouter"],
             state="readonly",
             width=30,
         )
@@ -72,10 +80,8 @@ class SRTTranslatorGUI:
         # API Key
         key_frame = tk.Frame(settings_frame)
         key_frame.pack(fill=tk.X, pady=5)
-
         key_label = tk.Label(key_frame, text="API Key:", width=15, anchor="w")
         key_label.pack(side=tk.LEFT)
-
         self.api_key_entry = tk.Entry(key_frame, width=50)
         self.api_key_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
@@ -85,26 +91,56 @@ class SRTTranslatorGUI:
         # Novita API Base URL
         base_url_frame = tk.Frame(settings_frame)
         self.novita_frames.append(base_url_frame)
-
         base_url_label = tk.Label(
             base_url_frame, text="Novita Base URL:", width=15, anchor="w"
         )
         base_url_label.pack(side=tk.LEFT)
-
         self.base_url_entry = tk.Entry(base_url_frame, width=50)
         self.base_url_entry.insert(0, "https://api.novita.ai/v3/openai")
         self.base_url_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
-        # Novita Model
+        # Thêm frame cho model selection
         model_frame = tk.Frame(settings_frame)
-        self.novita_frames.append(model_frame)
-
-        model_label = tk.Label(model_frame, text="Novita Model:", width=15, anchor="w")
+        model_frame.pack(fill=tk.X, pady=5)
+        model_label = tk.Label(model_frame, text="Chọn model:", width=15, anchor="w")
         model_label.pack(side=tk.LEFT)
 
-        self.model_entry = tk.Entry(model_frame, width=50)
-        self.model_entry.insert(0, "meta-llama/llama-3.1-8b-instruct")
-        self.model_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        # Listbox để chọn model với thông tin miễn phí
+        self.model_listbox = tk.Listbox(
+            model_frame, height=6, width=50, exportselection=0
+        )
+        self.model_listbox.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        model_scrollbar = tk.Scrollbar(model_frame, orient=tk.VERTICAL)
+        model_scrollbar.config(command=self.model_listbox.yview)
+        model_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.model_listbox.config(yscrollcommand=model_scrollbar.set)
+
+        # Đặt sự kiện cho listbox - SỬA: thêm << và >>
+        self.model_listbox.bind("<<ListboxSelect>>", self.on_model_select)
+
+        # Checkbox cho phép nhập model tùy chỉnh
+        custom_model_check = tk.Checkbutton(
+            settings_frame,
+            text="Model tùy chỉnh",
+            variable=self.custom_model_var,
+            command=self.toggle_custom_model,
+        )
+        custom_model_check.pack(anchor=tk.W, padx=15, pady=5)
+
+        # Frame để nhập model tùy chỉnh (mặc định ẩn)
+        self.custom_model_frame = tk.Frame(settings_frame)
+        custom_model_label = tk.Label(
+            self.custom_model_frame, text="Model tùy chỉnh:", width=15, anchor="w"
+        )
+        custom_model_label.pack(side=tk.LEFT)
+        self.custom_model_entry = tk.Entry(self.custom_model_frame, width=50)
+        self.custom_model_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        # Thiết lập sự kiện khi thay đổi API
+        self.api_var.trace_add("write", self.on_api_change)
+
+        # Gọi on_api_change để thiết lập ban đầu
+        self.on_api_change()
 
         # Thêm frame chọn chế độ dịch
         mode_frame = tk.Frame(settings_frame)
@@ -295,11 +331,16 @@ class SRTTranslatorGUI:
 
         # Tạo hàm wrapper để truyền các tham số vào start_translation
         def on_start_click():
+            # Xác định model được sử dụng
+            if self.custom_model_var.get():
+                model = self.custom_model_entry.get().strip()
+            else:
+                model = self.model_var.get()
             start_translation(
                 self.api_var,
                 self.api_key_entry,
                 self.base_url_entry,
-                self.model_entry,
+                model,
                 self.input_file_entry,
                 self.output_file_entry,
                 self.threads_entry,
@@ -321,7 +362,7 @@ class SRTTranslatorGUI:
         self.start_button.pack()
 
         # Thiết lập sự kiện khi thay đổi API
-        self.api_var.trace("w", self.on_api_change)
+        self.api_var.trace_add("write", self.on_api_change)
         # Gọi on_api_change để thiết lập ban đầu
         self.on_api_change()
 
@@ -388,12 +429,59 @@ class SRTTranslatorGUI:
 
     def on_api_change(self, *args):
         """Xử lý khi thay đổi loại API"""
-        if self.api_var.get() == "novita":
+        api_type = self.api_var.get()
+
+        # Cập nhật danh sách model dựa trên API được chọn
+        self.model_listbox.delete(0, tk.END)
+        models = TranslationAPI.get_models_for_api(api_type)
+
+        for i, (model_id, description, is_free) in enumerate(models):
+            display_text = f"{model_id} - {description}"
+            if is_free:
+                display_text += " (FREE)"
+            self.model_listbox.insert(tk.END, display_text)
+            if is_free:
+                self.model_listbox.itemconfig(
+                    i, {"bg": "#e6ffe6"}
+                )  # Nền xanh nhạt cho model miễn phí
+
+        # Chọn model mặc định là model đầu tiên
+        if models:
+            self.model_listbox.selection_set(0)
+            self.model_var.set(models[0][0])
+
+        # Hiển thị/ẩn các frame Novita
+        if api_type == "novita":
             for frame in self.novita_frames:
                 frame.pack(fill=tk.X, pady=5, after=self.api_key_entry.master)
         else:
             for frame in self.novita_frames:
                 frame.pack_forget()
+
+        # Ẩn custom model nếu đang được hiển thị
+        if self.custom_model_var.get():
+            self.custom_model_var.set(False)
+            self.toggle_custom_model()
+
+    def on_model_select(self, event):
+        """Lưu model được chọn từ listbox"""
+        if self.model_listbox.curselection():
+            index = self.model_listbox.curselection()[0]
+            value = self.model_listbox.get(index)
+            # Lấy model_id từ giá trị hiển thị (cắt phần "(FREE)" nếu có)
+            model_id = value.split(" (FREE)")[0].split(" - ")[0].strip()
+            self.model_var.set(model_id)
+
+    def toggle_custom_model(self):
+        """Hiển thị/ẩn trường nhập model tùy chỉnh"""
+        if self.custom_model_var.get():
+            self.custom_model_frame.pack(
+                fill=tk.X, pady=5, after=self.model_listbox.master
+            )
+            self.model_listbox.config(state=tk.DISABLED)
+        else:
+            self.custom_model_frame.pack_forget()
+            self.model_listbox.config(state=tk.NORMAL)
 
     def run(self):
         """Khởi chạy vòng lặp chính của GUI"""
